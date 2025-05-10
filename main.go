@@ -61,7 +61,7 @@ func main() {
 						fileMu.Unlock()
 						fmt.Printf("[✅ 成功] %s\n", line)
 					} else {
-						fmt.Printf("[❌ 失败] %s@%s\n", user, ip)
+						fmt.Printf("[❌ 失败] %s@%s %s\n", user, ip, pass)
 					}
 				}()
 			}
