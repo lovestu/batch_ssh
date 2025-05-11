@@ -73,6 +73,8 @@ func main() {
 }
 
 func trySSH(ip, username, password string) bool {
+	fmt.Printf("尝试连接 SSH [%s %s %s]\n", ip, username, password)
+
 	config := &ssh.ClientConfig{
 		User: username,
 		Auth: []ssh.AuthMethod{
